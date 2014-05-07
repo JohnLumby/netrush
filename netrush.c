@@ -4201,7 +4201,7 @@ unsigned long intvl_nummsgr;        /*  total number of messages recvd by all wo
   }
   else command_nameP = netrush_string;
 
-  while ( (option = getopt (argc, argv, ":c:d:e:k:l:m:n:o:O:p:r:s:C:S:I:KNRWVqthvwi")) != -1)
+  while ( (option = getopt (argc, argv, ":c:d:e:k:l:m:n:o:O:p:r:s:C:S:I:NRWVqthvwi")) != -1)
   {
 #ifdef DEBUG_OPTION
     printline(stderr,"option %c\n",option);
