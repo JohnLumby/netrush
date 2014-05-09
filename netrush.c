@@ -137,12 +137,12 @@ int set_rc_to_77(void);
 const char message_som   = '\x11'; /* start-of-msg indicator  */
 const char message_eom   = '\xee'; /* end-of-msg indicator  */
 const char stream_eof[2] = "\xef"; /* end-of-stream indicator */
-#define MESSAGE_BANNER_SIZE 11  /*  length of string - see below */
-#define MESSAGE_SOMBAN_SIZE (MESSAGE_BANNER_SIZE+1)  /*  length of som indicator followed by banner string */
-#define MESSAGE_HDR_SIZE (MESSAGE_SOMBAN_SIZE+11)    /*  length of som indicator followed by banner followed by pid */
-#define MESSAGE_NUMWRITN_OFFSET (MESSAGE_HDR_SIZE+17)    /*  length of som indicator followed by banner followed by pid */
-const char enquirer_message_banner[MESSAGE_BANNER_SIZE+1] = { 'c', 'l', 'i', 'e', 'n', 't', ' ', 'm', 's', 'g', ' ', '\0' };
-const char responder_message_banner[MESSAGE_BANNER_SIZE+1] = { 's', 'e', 'r', 'v', 'e', 'r', ' ', 'm', 's', 'g', ' ', '\0' };
+#define MESSAGE_BANNER_SIZE 13  /*  length of string - see below */
+#define MESSAGE_SOMBAN_SIZE (MESSAGE_BANNER_SIZE+1)    /*  length of som indicator followed by banner string */
+#define MESSAGE_HDR_SIZE (MESSAGE_SOMBAN_SIZE+11)      /*  length of som indicator followed by banner followed by pid */
+#define MESSAGE_NUMWRITN_OFFSET (MESSAGE_HDR_SIZE+17)  /*  length of som indicator followed by banner followed by pid followed by sendcount */
+const char enquirer_message_banner[MESSAGE_BANNER_SIZE+1] =  { 'e', 'n', 'q', 'u', 'i', 'r', 'e', 'r', ' ', 'm', 's', 'g', ' ', '\0' };
+const char responder_message_banner[MESSAGE_BANNER_SIZE+1] = { 'r', 'e', 's', 'p', 'o', 'n', 'd', 'r', ' ', 'm', 's', 'g', ' ', '\0' };
 
 #include <net/if.h>
 #include <netinet/in.h>
