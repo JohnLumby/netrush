@@ -275,51 +275,8 @@ extern int optind, opterr, optopt;
 #undef LEFT_BIG_ENDIAN
 
 #define _int64 long long
-#define fopen64 fopen
-#define tvunit tv_usec
-#define TV_SCALE 1000        /*  amount by which to scale tv_units to bring into range 0-999 for printing */
 #define TVFORMAT "06"        /*  format pattern when NOT scaled */
 #define PERSEC 1000000       /*  number of tv_units per second  */
-#define I64_FORMAT "ll"
-#ifdef DEF_TMEZONE  /*  if linking multiple object decks together, only one may define tmezone */
-/************
-struct my_timezone
-  {
-    int tz_minuteswest;		** Minutes west of GMT.  **
-    int tz_dsttime;		** Nonzero if DST is ever in effect.  **
-  };
-****************/
-struct timezone tmezone = { 0 , 0 };
-#endif /* DEF_TMEZONE  */
-#define MONITOR_BEFORE (void) gettimeofday(&Tp_before ,&tmezone);
-#define MONITOR_AFTER(_tm_) (void) gettimeofday(&Tp_after ,&tmezone);      \
-                            _tm_.tv_sec += (Tp_after.tv_sec - Tp_before.tv_sec);     \
-                            _tm_.tv_usec += (Tp_after.tv_usec - Tp_before.tv_usec);  \
-                            if ( _tm_.tv_usec < 0 )                     \
-                            {                                           \
-                                 _tm_.tv_sec --;                        \
-                                 _tm_.tv_usec += PERSEC;               \
-                            }                                           \
-                            else if ( _tm_.tv_usec >= PERSEC )         \
-                            {                                           \
-                                 _tm_.tv_sec ++;                        \
-                                 _tm_.tv_usec -= PERSEC;               \
-                            }
-#define read_real_time(_aaa_, _bbb_) gettimeofday(_aaa_,0)
-#define timebasestruct_t struct timeval
-#define timestruc_t timeval
-#define tb_high tv_sec
-#define tb_low tv_usec
-#define time_base_to_time(_aaa_, _bbb_) (0)
-
-#define offset_t off_t
-
-#define LONGLONGFORMAT "ll"
-#define _O_CREAT  O_CREAT
-#define _O_APPEND O_APPEND
-#define _O_RDWR   O_RDWR
-#define _S_IWRITE S_IWRITE
-#define _open open
 
 #include <sys/resource.h>
 /* define RUSAGE_NONE to be a number that is neither RUSAGE_SELF nor RUSAGE_CHILDREN */
@@ -724,8 +681,8 @@ typedef struct sigaction SIGACTYPE;
 SIGACTYPE chsigaction, olsigINTaction, olsigTRMaction, olsigHUPaction, olsigDGRaction
               ,olsigUS1action, olsigUS2action, olsigALRMaction, olsigWCHaction, olsigPWRaction, olsigXCPaction, olsigPREaction, olsigPIPaction;
 
-timebasestruct_t start_time, finish_time;
-timebasestruct_t accum_time_base; /* accumulated delta time_base for send/receive */
+struct timeval start_time, finish_time;
+struct timeval accum_time_base; /* accumulated delta time_base for send/receive */
 long long *accum_timep;          /* ->   accumulated delta time for send/receive */
 
 char person[2][7] =  { { 'c', 'h', 'i', 'l', 'd', ' ', '\0' },
@@ -955,10 +912,10 @@ long close_connection(               /*  close the connection that is using sock
   return connindex;
 }
 
-int get_finish_time(int who, timebasestruct_t *gft_start_time, timebasestruct_t *gft_finish_time, timebasestruct_t *gft_accum_time_base)
+int get_finish_time(int who, struct timeval *gft_start_time, struct timeval *gft_finish_time, struct timeval *gft_accum_time_base)
 {
   int rc;
-  read_real_time(gft_finish_time, TIMEBASE_SZ);
+  gettimeofday(gft_finish_time,0);
 
     if (who != RUSAGE_NONE)
         getrusage(who, &RUsage);
@@ -968,18 +925,18 @@ int get_finish_time(int who, timebasestruct_t *gft_start_time, timebasestruct_t 
     curzone.tz_minuteswest = 0;
     curzone.tz_dsttime = 0;
     gettimeofday(&curtime,&curzone);
-    accum_timep = (long long *) &(gft_accum_time_base->tb_high);
-      gft_accum_time_base->tb_high = gft_finish_time->tb_high - gft_start_time->tb_high;
-      gft_accum_time_base->tb_low =  gft_finish_time->tb_low  - gft_start_time->tb_low;
-      while (gft_accum_time_base->tb_low < 0)
+    accum_timep = (long long *) &(gft_accum_time_base->tv_sec);
+      gft_accum_time_base->tv_sec = gft_finish_time->tv_sec - gft_start_time->tv_sec;
+      gft_accum_time_base->tv_usec =  gft_finish_time->tv_usec  - gft_start_time->tv_usec;
+      while (gft_accum_time_base->tv_usec < 0)
       {
-        gft_accum_time_base->tb_high -= 1;
-        gft_accum_time_base->tb_low  += PERSEC;
+        gft_accum_time_base->tv_sec -= 1;
+        gft_accum_time_base->tv_usec  += PERSEC;
       }
-      while (gft_accum_time_base->tb_low > PERSEC)
+      while (gft_accum_time_base->tv_usec > PERSEC)
       {
-        gft_accum_time_base->tb_high += 1;
-        gft_accum_time_base->tb_low  -= PERSEC;
+        gft_accum_time_base->tv_sec += 1;
+        gft_accum_time_base->tv_usec  -= PERSEC;
       }
 
   return 0;
@@ -2403,7 +2360,7 @@ int enquirerfn()
     printline(((verbose > 2) ? stderr : 0),"enquirerfn: enquirer %d : sent %lu recv %lu msgw %lu msgr %lu "
                ": elapsed time %d.%" TVFORMAT "d end time %24.24s %06.6d\n user CPU %d.%06.6d, system CPU %d.%06.6d,\n vol contxt swchs %d, invol contxt swchs %d\n"
               ,mypid,sendcount,recvcount,msgoutcount,msgincount
-              ,accum_time_base.tb_high, accum_time_base.tb_low
+              ,accum_time_base.tv_sec, accum_time_base.tv_usec
               ,ctime((time_t *)&(curtime.tv_sec)), curtime.tv_usec
               ,RUsage.ru_utime.tv_sec, RUsage.ru_utime.tv_usec
               ,RUsage.ru_stime.tv_sec, RUsage.ru_stime.tv_usec
@@ -3864,7 +3821,7 @@ int responderfn()
     printline(((verbose > 2) ? stderr : 0),"responderfn: responder %d : sent %lu recv %lu msgw %lu msgr %lu "
                ": elapsed time %d.%" TVFORMAT "d end time %24.24s %06.6d\n user CPU %d.%06.6d, system CPU %d.%06.6d,\n vol contxt swchs %d, invol contxt swchs %d\n"
               ,mypid,sendcount,recvcount,msgoutcount,msgincount
-              ,accum_time_base.tb_high, accum_time_base.tb_low
+              ,accum_time_base.tv_sec, accum_time_base.tv_usec
               ,ctime((time_t *)&(curtime.tv_sec)), curtime.tv_usec
               ,RUsage.ru_utime.tv_sec, RUsage.ru_utime.tv_usec
               ,RUsage.ru_stime.tv_sec, RUsage.ru_stime.tv_usec
@@ -4131,8 +4088,8 @@ int main(int argc, char **argv)
   double        all_avg_recv_len;   /*  average length of bytes rcvd per recv */
 
 /* interval statistics */
-timebasestruct_t intvl_start_time, intvl_finish_time; /*  interval start and finish times  */
-timebasestruct_t intvl_accum_time_base; /* accumulated delta time_base */
+struct timeval intvl_start_time, intvl_finish_time; /*  interval start and finish times  */
+struct timeval intvl_accum_time_base; /* accumulated delta time_base */
 /*  the following are the values till the start of the next interval  */
 unsigned long int_till_numsent;        /*  total number of send calls by all workers  */
 unsigned long int_till_numrecv;        /*  total number of recv calls by all workers */
@@ -4560,10 +4517,10 @@ unsigned long intvl_nummsgr;        /*  total number of messages recvd by all wo
             sigaction(SIG_DUMP_OPS,   &chsigaction, &olsigPREaction);
             sigaction(SIGPIPE,  &chsigaction, &olsigPIPaction);
 
-            read_real_time(&start_time, TIMEBASE_SZ);
+            gettimeofday(&start_time,0);
             /* initialise interval statistics */
-            intvl_start_time.tb_high = start_time.tb_high;
-            intvl_start_time.tb_low = start_time.tb_low;
+            intvl_start_time.tv_sec = start_time.tv_sec;
+            intvl_start_time.tv_usec = start_time.tv_usec;
             intvl_numsent = intvl_numrecv = intvl_nummsgw = intvl_nummsgr = 0;
 
             if (enquirerproccount > 0) /* if any work to do */
@@ -4658,12 +4615,12 @@ unsigned long intvl_nummsgr;        /*  total number of messages recvd by all wo
 		    printline(stdout,"netrush:" IPPROT_STRING ": %s %d k%d sent= %lu recv= %lu msgw= %lu msgr= %lu thissz %u othrsz %u\n"
 			    " interval -%d- elapsed time %d.%" TVFORMAT "d end time %24.24s %06.6d\n"
 			   ,(reportname+1), mypid, job_identifier, all_numsent, all_numrecv, all_nummsgw, all_nummsgr, MSG_BLOK_SZ, supvr_workrP->othrend_msg_blok_sz
-			  ,nintervals, intvl_accum_time_base.tb_high, intvl_accum_time_base.tb_low
+			  ,nintervals, intvl_accum_time_base.tv_sec, intvl_accum_time_base.tv_usec
 			  ,ctime((time_t *)&(curtime.tv_sec)), curtime.tv_usec
 		    );
 
-		    intvl_start_time.tb_high = intvl_finish_time.tb_high;
-		    intvl_start_time.tb_low = intvl_finish_time.tb_low;
+		    intvl_start_time.tv_sec = intvl_finish_time.tv_sec;
+		    intvl_start_time.tv_usec = intvl_finish_time.tv_usec;
 		    /*   note new start-of-interval counters  */
                     intvl_numsent = int_till_numsent;       intvl_numrecv = int_till_numrecv;
                     intvl_nummsgw = int_till_nummsgw;       intvl_nummsgr = int_till_nummsgr;
@@ -4854,7 +4811,7 @@ unsigned long intvl_nummsgr;        /*  total number of messages recvd by all wo
 #if (POLLSET & POLLSET_EDGE_TRIG)    /*  count EAGAIN and EWOULDBLOCK for edge-triggered */
               ,all_numwdblck
 #endif /*  (POLLSET & POLLSET_EDGE_TRIG) count EAGAIN and EWOULDBLOCK for edge-triggered */
-              ,accum_time_base.tb_high, accum_time_base.tb_low
+              ,accum_time_base.tv_sec, accum_time_base.tv_usec
               ,ctime((time_t *)&(curtime.tv_sec)), curtime.tv_usec
               ,RUsage.ru_utime.tv_sec, RUsage.ru_utime.tv_usec
               ,RUsage.ru_stime.tv_sec, RUsage.ru_stime.tv_usec
@@ -4892,7 +4849,7 @@ unsigned long intvl_nummsgr;        /*  total number of messages recvd by all wo
                 ,sosndbufsz ,sorcvbufsz
                 ,all_numsent ,all_numrecv ,all_nummsgw ,all_nummsgr, supvr_workrP->othrend_msg_blok_sz
                 ,0,0
-                ,accum_time_base.tb_high ,accum_time_base.tb_low
+                ,accum_time_base.tv_sec ,accum_time_base.tv_usec
                 ,RUsage.ru_utime.tv_sec ,RUsage.ru_utime.tv_usec ,RUsage.ru_stime.tv_sec ,RUsage.ru_stime.tv_usec);
             }
             }
