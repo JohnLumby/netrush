@@ -855,6 +855,7 @@ long close_connection(               /*  close the connection that is using sock
   if (connindex >= 0)
   {
     shutdown(sd,SHUT_RDWR);
+    close(sd);  /*  needed if many clients connect and terminate, to avoid errno 24 per-process limit of open file descriptors */
     if (sd < CONN_SOCK_SIZE)  /*  connection index is cached */
       conn_by_socket[sd] = -1;
     connection_array[connindex].con_socket_desc = -1;
