@@ -41,7 +41,7 @@ char usage_text[] = " netrush : utility for exchanging and logging messages betw
 "             -C <enquirerproccount> -S <responderproccount> -p <lowestport>\n"
 "      [-m <max_sendcount> | -l <time_limit> ] [ -r <report_dir> ] [-n <sosndbufsz>] [-e <sorcvbufsz>]\n"
 "      [-R] [-N] [-V] [-W] [-h] [-v] [-q] [-d <jobname>] [-w] [-t] [-i] [-k <job_identifier>]\n"
-"      [ -o <binary_output_file> | -O <linefeed_delimited_output_file> ]\n"
+"      [ -o <binary_output_file> | -O <linefeed_delimited_output_file> | -Q <unsuffixed_linefeed_delimited_output_file> ]\n"
 "    exactly one of the following must be specified:\n"
 "        -c = enquirer     -s = responder\n"
 "    followed by <enquirer:responder> in the form enquirername:respondername\n"
@@ -88,7 +88,7 @@ char usage_text[] = " netrush : utility for exchanging and logging messages betw
 " OR   both max_sendcount and time-limit  -  the job finishes whenever the first occurs\n"
 "    if   <report_dir>   is specified, each process will write a report to file <report_dir>/pid\n"
 "    <sosndbufsz>          socket SO_SNDBUF option\n"
-"    <sorcvbufsz>         socket SO_RCVBUF option\n"
+"    <sorcvbufsz>          socket SO_RCVBUF option\n"
 "\n"
 "    -R                  tcp/ip RFC1323 option\n"
 "    -N                  tcp/ip NODELAY option\n"
@@ -108,6 +108,9 @@ char usage_text[] = " netrush : utility for exchanging and logging messages betw
 "     which can occur anywhere within the stream and not under the control of sender or receiver;\n"
 "     for the linefeed_delimited_output_file,  messages from all enquirers are interleaved at line granularity,\n"
 "     that is,  lines delimited by linefeed will be preserved as contiguous sequences of characters.\n"
+"     the name of the file is suffixed with a string identifying the process\n"
+"     unless specified as -Q <unsuffixed_linefeed_delimited_output_file>.\n"
+"     The unsuffixed name can be used as a named pipe e.g. for compressing to a different file.\n"
 ;
            /*       J Lumby johnlumby@hotmail.com    */
 #ifndef XSEND_LIMIT
@@ -540,8 +543,9 @@ char *command_nameP = 0;          /*  ->  name of command which invoked this pro
 #ifdef MSG_OUTPUT_TO_FILE
 char msg_output_path[256] = { '\0' };  /*  write received msgs here if specified */
 char my_msg_output_type = '\0';        /*  o for binary , O for linefeed-delimited  */
-#define MY_MSG_OUTPUT_BINARY 'o'
-#define MY_MSG_OUTPUT_LINEFD 'O'
+#define MY_MSG_OUTPUT_BINARY 'o'       /*  binary output file */
+#define MY_MSG_OUTPUT_LINEFD 'O'       /*  linefeed-delimited output file  */
+#define MY_MSG_OUTPUT_UNSUFX 'Q'       /*  output file unsuffixed */
 #endif  /* MSG_OUTPUT_TO_FILE */
  
 /*  printline prints to stdout/stderr and to reportFILE if defined
@@ -2656,6 +2660,10 @@ int handle_line_spanned_msg(struct connection_info *conninfoP , int msg_output_f
            ) {
             rc = write(msg_output_fd , (conninfoP->line_spanned_msgblok+conninfoP->line_spanned_offset)
                                 , (conninfoP->line_spanned_send_recv_len-conninfoP->line_spanned_offset));
+            if (rc != (conninfoP->line_spanned_send_recv_len-conninfoP->line_spanned_offset)) {
+                printline(stderr,"responderfn: writing to %s rc= %d != buflength %d errno %d\n"
+                          ,msg_output_path ,rc ,(conninfoP->line_spanned_send_recv_len-conninfoP->line_spanned_offset) ,errno);
+            }
         }
         /*  this residual msgblok is now exhausted and can be either reused or freed depending on whether still needed */
 
@@ -2683,6 +2691,10 @@ int handle_line_spanned_msg(struct connection_info *conninfoP , int msg_output_f
         /*  line_spanned_offset is now the offset of the last character to write from current inmsgblok */
         if ( ++line_spanned_offset > 0) {
             rc = write(msg_output_fd , local_inmsgblok , line_spanned_offset);
+            if (rc != line_spanned_offset) {
+                printline(stderr,"responderfn: writing to %s rc= %d != buflength %d errno %d\n"
+                          ,msg_output_path ,rc ,line_spanned_offset ,errno);
+            }
         }
 
         /*  line_spanned_offset is now the length written,
@@ -2848,10 +2860,12 @@ int responderfn()
       if (msg_output_path[0])
       {
         strcpy (my_msg_output_path, msg_output_path);
-        strcat(my_msg_output_path, ".srvr");
-	if (jobname[0])
-	  strcat(my_msg_output_path, jobname);
-        sprintf(my_msg_output_path + strlen(my_msg_output_path),"%d", mypid);
+        if (MY_MSG_OUTPUT_UNSUFX != my_msg_output_type) {  /* not unsuffixed */
+            strcat(my_msg_output_path, ".srvr");
+            if (jobname[0])
+              strcat(my_msg_output_path, jobname);
+            sprintf(my_msg_output_path + strlen(my_msg_output_path),"%d", mypid);
+        }
         my_msg_output_fd = open(my_msg_output_path, O_WRONLY|O_CREAT, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP);
         if (my_msg_output_fd < 0 ) {
            printline(stderr,"responderfn: could not open %s errno %d\n",my_msg_output_path, errno);
@@ -3490,7 +3504,11 @@ int responderfn()
                                               && ('\n' == *(inmsgblok + send_recv_len - 1))              /* ends in linefeed */
                                             )
                                        ) {
-                                        write(my_msg_output_fd , inmsgblok , send_recv_len);
+                                        rc = write(my_msg_output_fd , inmsgblok , send_recv_len);
+                                        if (rc != send_recv_len) {
+                                            printline(stderr,"responderfn: writing to %s rc= %d != buflength %d errno %d\n"
+                                                      ,msg_output_path ,rc ,send_recv_len ,errno);
+                                        }
                                     } else {
                                         rc = handle_line_spanned_msg(&(connection_array[connindex]) , my_msg_output_fd , &inmsgmall , &inmsgblok , send_recv_len);
                                         if (rc < 0)
@@ -3878,7 +3896,12 @@ int responderfn()
  /*  exit here seems to result in lost output so return to main which will return again to OS
      exit (rc);
   */
- return rc;
+#ifdef MSG_OUTPUT_TO_FILE
+        if (my_msg_output_fd >= 0 ) {
+           close(my_msg_output_fd);
+        }
+#endif  /* MSG_OUTPUT_TO_FILE */
+return rc;
 }
 
 int get_enquirer_responder_names(int option)
@@ -4159,7 +4182,7 @@ unsigned long intvl_nummsgr;        /*  total number of messages recvd by all wo
   }
   else command_nameP = netrush_string;
 
-  while ( (option = getopt (argc, argv, ":c:d:e:k:l:m:n:o:O:p:r:s:C:S:I:NRWVqthvwi")) != -1)
+  while ( (option = getopt (argc, argv, ":c:d:e:k:l:m:n:o:O:Q:p:r:s:C:S:I:NRWVqthvwi")) != -1)
   {
 #ifdef DEBUG_OPTION
     printline(stderr,"option %c\n",option);
@@ -4266,6 +4289,7 @@ unsigned long intvl_nummsgr;        /*  total number of messages recvd by all wo
       break;
     case 'o':  /*  binary output file for messages received  */
     case 'O':  /*  linefeed-delimited output file for messages received  */
+    case 'Q':  /*  linefeed-delimited output file unsuffixed by .srvrnnn */
 #ifdef MSG_OUTPUT_TO_FILE
       my_msg_output_type = option;
       ix = (sizeof(msg_output_path)-16);    /*  max size permitted  */
