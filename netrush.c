@@ -41,7 +41,8 @@ char usage_text[] = " netrush : utility for exchanging and logging messages betw
 "             -C <enquirerproccount> -S <responderproccount> -p <lowestport>\n"
 "      [-m <max_sendcount> | -l <time_limit> ] [ -r <report_dir> ] [-n <sosndbufsz>] [-e <sorcvbufsz>]\n"
 "      [-R] [-N] [-V] [-W] [-h] [-v] [-q] [-d <jobname>] [-w] [-t] [-i] [-k <job_identifier>]\n"
-"      [ -o <binary_output_file> | -O <linefeed_delimited_output_file> | -Q <unsuffixed_linefeed_delimited_output_file> ]\n"
+"      [ -o <binary_output_file> | -u <unsuffixed_binary_output_file> \n"
+"      | -O <linefeed_delimited_output_file> | -U <unsuffixed_linefeed_delimited_output_file> ]\n"
 "    exactly one of the following must be specified:\n"
 "        -c = enquirer     -s = responder\n"
 "    followed by <enquirer:responder> in the form enquirername:respondername\n"
@@ -105,11 +106,12 @@ char usage_text[] = " netrush : utility for exchanging and logging messages betw
 "    <binary_output_file> or <linefeed_delimited_output_file> apply only to the responder\n"
 "     and specify to write received messages to the named file - specify one or neither.\n"
 "     For the binary_output_file,  messages from all enquirers are interleaved at byte granularity on tcp recv boundaries,\n"
-"     which can occur anywhere within the stream and not under the control of sender or receiver;\n"
-"     for the linefeed_delimited_output_file,  messages from all enquirers are interleaved at line granularity,\n"
+"     which can occur anywhere within the stream and not under the control of sender or receiver.\n"
+"     For the linefeed_delimited_output_file,  messages from all enquirers are interleaved at line granularity,\n"
 "     that is,  lines delimited by linefeed will be preserved as contiguous sequences of characters.\n"
-"     the name of the file is suffixed with a string identifying the process\n"
-"     unless specified as -Q <unsuffixed_linefeed_delimited_output_file>.\n"
+"     The name of the file is suffixed with a string identifying the process\n"
+"     unless specified with -u or -U flag\n"
+"     The rteason for suffixing is to ensure that concurrent responders do not overwrite each others files.\n"
 "     The unsuffixed name can be used as a named pipe e.g. for compressing to a different file.\n"
 ;
            /*       J Lumby johnlumby@hotmail.com    */
@@ -436,10 +438,12 @@ struct connection_info
   RAND_INT_TYPE con_ranvalu;      /*  random value for use with choosing when to send */
   struct sockaddr_general othrend_socket; /*   socket struct for other end of connection */
 #ifdef MSG_OUTPUT_TO_FILE
+  /* residual area for partial lines being assembled ... */
   char *line_spanned_msgmall;         /* pointer to mallocd area containing inmsgblok described next */
-  char *line_spanned_msgblok;         /* pointer to inmsgblok in which last line spans end of buffer */
+  char *line_spanned_msgblok;         /* pointer to page-aligned-within-mallocd area inmsgblok in which last line spans end of buffer */
+  unsigned long line_spanned_msgmall_size;  /*  size of mallocd area containing inmsgblok */
   unsigned int line_spanned_offset;   /* offset in inmsgblok of next char to be output to file */
-  int line_spanned_send_recv_len;     /*  length of received data in inmsgblok */
+  int line_spanned_send_recv_len;     /* length of received data in inmsgblok */
 #endif  /* MSG_OUTPUT_TO_FILE */
   unsigned long con_numsent;      /*  num send calls  */
   unsigned long con_numrecv;      /*  num recv calls  */
@@ -505,6 +509,7 @@ unsigned long excesssendcount;      /*  excess of (msgw - msgr) - currently */
 #ifdef DYNAMIC_MSG_BUF        /*  malloc'd message buffers */
 #if (DYNAMIC_MSG_BUF == 4096) /*  page-aligned message buffers */
 char *inmsgmall = 0;              /*  inbound message malloc'd area              */
+unsigned long inmsgmall_size;     /*  size of mallocd area containing inmsgblok  */
 char *outmsgmall = 0;             /*  outbound message malloc'd area             */
 #endif
 char *inmsgblok = 0;              /*  inbound message buffer  (one per process)  */
@@ -525,7 +530,7 @@ volatile int signalled = 0;       /* signal received               */
 volatile int printing_ctl = PRINT_ON; /* default is printing is enabled */
 long shutting_down;    /*   indicates to try to shut down gracefully - accept input, dont send */
 char *accept_con_pbuf_start;          /*  address of start of accept_connections print buffer */
-#define ACCEPT_CON_PBUF_LEN 32768     /*  length of accept_connections print buffer */
+#define ACCEPT_CON_PBUF_LEN 49152     /*  length of accept_connections print buffer */
 char *accept_con_pbuf_cur;            /*  address of current write pointer in accept_connections print buffer */
 struct itimerval time_limit = { { 0 , 0 }, { 0 , 0 } };     /*  limits time for job          */
 struct itimerval interval_duration = { { 0 , 0 }, { 0 , 0 } };     /*  interval duration   */
@@ -544,8 +549,10 @@ char *command_nameP = 0;          /*  ->  name of command which invoked this pro
 char msg_output_path[256] = { '\0' };  /*  write received msgs here if specified */
 char my_msg_output_type = '\0';        /*  o for binary , O for linefeed-delimited  */
 #define MY_MSG_OUTPUT_BINARY 'o'       /*  binary output file */
+#define MY_MSG_OUTPUT_BINARY_UNSUFX 'u'       /*  binary output file unsuffixed  */
 #define MY_MSG_OUTPUT_LINEFD 'O'       /*  linefeed-delimited output file  */
-#define MY_MSG_OUTPUT_UNSUFX 'Q'       /*  output file unsuffixed */
+#define MY_MSG_OUTPUT_LINEFD_UNSUFX 'U'       /*  linefeed-delimited output file unsuffixed */
+#define MY_MSG_OUTPUT_LINEFD_UNSUFX_DPRC 'Q'  /*  linefeed-delimited output file unsuffixed (deprecated flag) */
 #endif  /* MSG_OUTPUT_TO_FILE */
  
 /*  printline prints to stdout/stderr and to reportFILE if defined
@@ -2441,6 +2448,7 @@ struct accept_parm_obj  /*  pointers to parameters for accept_connections */
   int listensd;    /*  listener socket fd  */
   struct connection_info *connection_array;  /*  array of all connections */
   /*  values returned  when called synchronously  */
+  struct sockaddr_general othrend_socket; /*   socket struct for other end of connection */
   int accept_rc;     /*  return code  -  >= 0 <==> ok and msgsock has socketdescr, < 0 <==> not ok and msgsock has errno */
   int msgsock;       /*  returned msgsock or errno (see above)  when called synchronously  */
 };
@@ -2450,6 +2458,7 @@ int add_responder_connection(struct connection_info *connection_array
                          ,short *conn_by_socket
                          ,long *connectioncount_p
                          ,int *max_socket_desc_p
+                         ,struct sockaddr_general *othrend_socketP
                          )
      /*   add a new msgsock to the responder connection array if room
       *   choose the first unused entry in the connection array or fail if there are none
@@ -2482,6 +2491,10 @@ int add_responder_connection(struct connection_info *connection_array
                       printline(stderr,"add_responder_connection: responder %d: added connection connindex %ld with msgsock %d\n",mypid,connindex,msgsock);
 #endif /* POLLSET */
       connection_array[connindex].con_socket_desc = msgsock;
+      /*  set the othrend socket addr struct if supplied  */
+      if ((struct sockaddr_general *)0 != othrend_socketP) {
+          memcpy((void *)&(connection_array[connindex].othrend_socket), (const void *)othrend_socketP, sizeof(struct sockaddr_general));
+      }
       if (msgsock > max_socket_desc)
         max_socket_desc = msgsock;
       if (msgsock < CONN_SOCK_SIZE)
@@ -2525,7 +2538,8 @@ void *accept_connections(void *t_parm_p)
  listen_again:
   if ((accept_con_pbuf_cur - accept_con_pbuf_start) > ACCEPT_CON_PBUF_LEN/2) /* if used more than half buffer */
     accept_con_pbuf_cur = accept_con_pbuf_start;                             /* then overwrite */
- accept_rc =  msgsock = (accept(listensd, 0, 0));             /*  get a connection */
+  socket_name_length = sizeof(struct sockaddr_general)
+   , accept_rc =  msgsock = (accept(listensd, (struct sockaddr *)(&accept_parm_p->othrend_socket), &socket_name_length)); /* get a connection */
   accept_parm_p->accept_rc = accept_parm_p->msgsock = msgsock;
   if (accept_rc >= 0)  /*  got a connection */
   {
@@ -2603,10 +2617,22 @@ void *accept_connections(void *t_parm_p)
                    ,(char *)(&socket_name) ,socket_name.sockaddr_u.opaque_sockaddr.sa_family ,socket_name.sin_port, errno);
         hostBfr1[0] = '\0';
       }
+
+      RECONCILE_PORTS_GENERAL(&accept_parm_p->othrend_socket);        /*  reconcile our copy of othrend port number */
+  
+      if (getnameinfo((struct sockaddr *)(&accept_parm_p->othrend_socket), sizeof(struct sockaddr_general), hostBfr2, NI_MAXHOST, 0, 0, NAMEINFO_FLAGS) != 0) {
+        fprintf(stderr,"%s accept_connections:  getnameinfo of socket_addr at 0x%p family %hu port %hu reports errno %d\n",command_nameP
+                   ,(char *)(&accept_parm_p->othrend_socket) ,accept_parm_p->othrend_socket.sockaddr_u.opaque_sockaddr.sa_family ,accept_parm_p->othrend_socket.sin_port, errno);
+        hostBfr2[0] = '\0';
+      }
+
       if ((sprintf_len = sprintf(accept_con_pbuf_cur
-                  ,"accept_connections: responder %d: num already connected %ld socket desc %d addr %s port %hu\n"
-                  ,mypid,connectioncount,msgsock
-                  ,hostBfr1,ntohs(socket_name.sin_port))) > 0) {
+                  ,"accept_connections: responder %d: conn from addr %s port %hu to addr %s port %hu socket desc %d num already connected %ld\n"
+                  ,mypid
+                  ,hostBfr2,ntohs(accept_parm_p->othrend_socket.sin_port)
+                  ,hostBfr1,ntohs(socket_name.sin_port)
+                  ,msgsock,connectioncount
+          )) > 0) {
 			  accept_con_pbuf_cur += sprintf_len;
       }
     }
@@ -2641,70 +2667,121 @@ void *accept_connections(void *t_parm_p)
 
 #ifdef MSG_OUTPUT_TO_FILE
 /*  write linefeed-delimited output to file when a line spans either previous or current inmsgblok
+**  write only complete lines terminated by linefeed.
+**  Keep partial lines pending in the residual area addressed by conninfoP->line_spanned_msgmal
+**  at conclusion,  if successful,   the current inmsg buffer will be free for reuse for next recv
 **  return >= 0 for success or mild exception,  <0 for fatal disaster
 */
-int handle_line_spanned_msg(struct connection_info *conninfoP , int msg_output_fd , char **inmsgmallP , char **inmsgblokP , int send_recv_len)
+int handle_line_spanned_msg(struct connection_info *conninfoP , int msg_output_fd , char **inmsgmallP , char **inmsgblokP , unsigned long *inmsgmall_sizeP , int send_recv_len)
 {
     int rc = -9;  /*  note that rc will be set in one or other of the two if blocks below  -  caller guarantees one of them will be taken */
     char *local_inmsgblok;
     char *local_inmsgmall;
     int line_spanned_offset;   /* offset in current inmsgblok of next char to be output to file */
+    int linefeed_offset;       /* offset in current inmsgblok of linefeed if any */
+    unsigned long line_spanned_msgmall_size;  /*  size of mallocd area containing inmsgblok */
 
+    if (send_recv_len > 0) {  /*  guard against empty inmsgblok or stupid length */
         local_inmsgmall = *inmsgmallP; /* local copy of addr of current inmsgmall area */
         local_inmsgblok = *inmsgblokP; /* local copy of addr of current inmsgblok buffer */
+        line_spanned_msgmall_size = *inmsgmall_sizeP;  /* local copy of size of current inmsgmall area */
+
+        /*  find linefeed in current inmsgblok */
+        linefeed_offset = send_recv_len - 1;                  /*  offset of last valid character */
+        if ('\n' != *(local_inmsgblok + linefeed_offset)) {               /*  line spans current */
+            /*  scan back from end to start to find last linefeed  */
+            do {
+                linefeed_offset--;
+            } while ( (linefeed_offset >= 0) && ('\n' != *(local_inmsgblok + linefeed_offset)) );
+        }
+
         /*  first write the pending residual characters,
         **  then scan the current inmsgblok
         */
-        if (    (0 != conninfoP->line_spanned_msgblok) /*  there is a residual */
-             && (conninfoP->line_spanned_send_recv_len > conninfoP->line_spanned_offset)
+        if (    (0 != conninfoP->line_spanned_msgblok)                                   /*  there is a residual */
+             && (conninfoP->line_spanned_send_recv_len > conninfoP->line_spanned_offset) /*  and some of it remains to be written */
            ) {
-            rc = write(msg_output_fd , (conninfoP->line_spanned_msgblok+conninfoP->line_spanned_offset)
-                                , (conninfoP->line_spanned_send_recv_len-conninfoP->line_spanned_offset));
-            if (rc != (conninfoP->line_spanned_send_recv_len-conninfoP->line_spanned_offset)) {
-                printline(stderr,"responderfn: writing to %s rc= %d != buflength %d errno %d\n"
-                          ,msg_output_path ,rc ,(conninfoP->line_spanned_send_recv_len-conninfoP->line_spanned_offset) ,errno);
+
+            /*  possibility to be handled :
+             *       residual with some yet-unwritten bytes
+             *   AND current inmsgblok buffer is non-empty and does not contain a linefeed.
+             *  In this case no data can yet be written since there is no complete line to write,
+             *  but nor can we simply leave it there since non-empty.
+             *  So acquire new line_spanned_msgblok and concatenate each recv_len length.
+             *  if very verbose,  report this,  as it could indicate a network problem of excessively short packets
+            */
+            if (linefeed_offset < 0) {    /*  no linefeed in current inmsgblok so must not write any bytes out */
+                /* size of new area is size of residual plus current plus one more MSG_BLOK_SZ */
+                line_spanned_msgmall_size += (conninfoP->line_spanned_msgmall_size + MSG_BLOK_SZ);
+                if (!(local_inmsgmall = (char *)malloc(line_spanned_msgmall_size+4095))) {
+                    printline(stderr,"responderfn: responder %d: couldn't obtain storage size %d for inbound message buffer\n",mypid,(line_spanned_msgmall_size+4095));
+                    rc = -1;
+                } else {
+                    local_inmsgblok = (char *)(((((long)(local_inmsgmall))+4095)>>12)<<12); /*  page-aligned inbound message buffer */
+                    /*  note  --  in the following,  we copy the complete send_recv len of each buffer -
+                    **            it is too tricky to try to exclude the line_spanned_offset
+                    */
+                    memcpy(local_inmsgblok, conninfoP->line_spanned_msgblok, conninfoP->line_spanned_send_recv_len);   /* copy all recv_len of previous residual */
+                    memcpy(((local_inmsgblok)+conninfoP->line_spanned_send_recv_len), *inmsgblokP, send_recv_len); /* copy all recv_len of current */
+                    /*  we can now free the residual buffer
+                    **  since its contents have been copied and it is not needed for new current inmsgblok,
+                    **  because current inmsgblok can be reused (and so is not freed!)
+                    */
+                    free(conninfoP->line_spanned_msgmall);
+                    printline(((verbose > 1) ? stderr : 0),"responderfn: responder %d: on msg number %d : current line spans more than two tcp recv msgs of lengths %d , %d , network packets may be excessively small %.*s\n"
+                                                  ,mypid,conninfoP->con_numrecv,conninfoP->line_spanned_send_recv_len,send_recv_len,send_recv_len,*inmsgblokP);
+                    conninfoP->line_spanned_msgmall = local_inmsgmall;  /*  new mallocd area  */
+                    conninfoP->line_spanned_msgmall_size = line_spanned_msgmall_size;  /*  new size of mallocd area  */
+                    conninfoP->line_spanned_msgblok = local_inmsgblok;                     /*  new concatenated msgblok */
+                    conninfoP->line_spanned_send_recv_len += send_recv_len;            /*  new length of received data */
+                    /*  and note that offset inside this buffer is unchanged   */
+                    /*  and note that current inmsgblok is unchanged but now may now be reused  */
+                    rc = 0;
+                    goto all_disposed;
+                }
+            } else {    /*  linefeed found so proceed to write complete line  */
+                rc = write(msg_output_fd , (conninfoP->line_spanned_msgblok+conninfoP->line_spanned_offset)
+                                    , (conninfoP->line_spanned_send_recv_len-conninfoP->line_spanned_offset));
+                if (rc != (conninfoP->line_spanned_send_recv_len-conninfoP->line_spanned_offset)) {
+                    printline(stderr,"responderfn: writing to %s rc= %d != buflength %d errno %d\n"
+                              ,msg_output_path ,rc ,(conninfoP->line_spanned_send_recv_len-conninfoP->line_spanned_offset) ,errno);
+                }
             }
         }
-        /*  this residual msgblok is now exhausted and can be either reused or freed depending on whether still needed */
 
-        line_spanned_offset = send_recv_len - 1;                        /*  offset of last valid character */
-        if ('\n' != *(local_inmsgblok + line_spanned_offset)) {               /*  line spans current */
-            /*  scan back from end to start to find last linefeed  */
-            do {
-                line_spanned_offset--;
-            } while ( (line_spanned_offset >= 0) && ('\n' != *(local_inmsgblok + line_spanned_offset)) );
+        /*  if we reach here,
+        **  either         residual msgblok is exhausted and can be either reused or freed
+        **                 depending on whether still needed
+        **  or             there is no residual msgblok
+        */
 
-            if (    (line_spanned_offset < 0)
-                 && (0 != conninfoP->line_spanned_msgblok)
-               )  {
-                /*   unfortunate case  -
-                **   there was a residual *and* no linefeed anywhere within this current inmsgblok -
-                **   this implies the current line spans more than two bloks!
-                **   in which case it is not possible to guarantee no interleaving
-                */
-                    printline(stderr,"responderfn: responder %d: current line spans more than two tcp recv msgs, cannot guarantee no interleaving in msg %d %.*s\n"
-                                                  ,mypid,conninfoP->con_numrecv,send_recv_len,local_inmsgblok);
-                    line_spanned_offset = (send_recv_len - 1);   /*   no choice other than to write the entire blok */
-            }
-        }
-
-        /*  line_spanned_offset is now the offset of the last character to write from current inmsgblok */
-        if ( ++line_spanned_offset > 0) {
+        /*  now investigate whether a line(s) ends in current inmsgblok  
+        **  and if so write it/them
+        */
+        line_spanned_offset = (linefeed_offset + 1);       /* offset following linefeed or 0 if no linefeed   */
+        if ( line_spanned_offset > 0) {
+            /*  line_spanned_offset is now the offset of the character following the last character to write from current inmsgblok */
             rc = write(msg_output_fd , local_inmsgblok , line_spanned_offset);
             if (rc != line_spanned_offset) {
                 printline(stderr,"responderfn: writing to %s rc= %d != buflength %d errno %d\n"
                           ,msg_output_path ,rc ,line_spanned_offset ,errno);
             }
+        } else {
+            /*  no line to write,  so set rc = 0 unless previously set */
+            if (rc == -9) {
+                rc = 0;
+            }
         }
 
         /*  line_spanned_offset is now the length written,
-        **    i.e. the offset of the character following last written from current inmsgblok
+        **  i.e. the offset of the character following last written from current inmsgblok
         **  now update state in connection block and dispose of old residual if any
         */
         if (line_spanned_offset < send_recv_len) {    /*  some of current blok not written ==>> becomes new residual */
             if (0 != conninfoP->line_spanned_msgblok) { /*  there is a (previous) residual */
                 *inmsgmallP = conninfoP->line_spanned_msgmall; /* so reuse it as new inmsgblock */
                 *inmsgblokP = conninfoP->line_spanned_msgblok; /* so reuse it as new inmsgblock */
+                *inmsgmall_sizeP = conninfoP->line_spanned_msgmall_size;
             } else {  /*  obtain a new current inmsgblok  */
                 /*  we can assume DYNAMIC_MSG_BUF == 4096 - enforced earlier */
                 if (!(*inmsgmallP = (char *)malloc(MSG_BLOK_SZ+4095))) {
@@ -2712,9 +2789,11 @@ int handle_line_spanned_msg(struct connection_info *conninfoP , int msg_output_f
                     rc = -1;
                 } else {
                     *inmsgblokP = (char *)(((((long)(*inmsgmallP))+4095)>>12)<<12); /*  page-aligned inbound message buffer */
+                    *inmsgmall_sizeP = MSG_BLOK_SZ;   /* size of current mallocd area */
                 }
             }
             conninfoP->line_spanned_msgmall = local_inmsgmall;   /* and set current as residual  */
+            conninfoP->line_spanned_msgmall_size = line_spanned_msgmall_size;  /*  new size of mallocd area  */
             conninfoP->line_spanned_msgblok = local_inmsgblok;   /*     set current as residual  */
             conninfoP->line_spanned_offset = line_spanned_offset; /* new residual offset */
             conninfoP->line_spanned_send_recv_len = send_recv_len; /* new residual length */
@@ -2722,13 +2801,16 @@ int handle_line_spanned_msg(struct connection_info *conninfoP , int msg_output_f
             if (0 != conninfoP->line_spanned_msgblok) { /*  there is a (previous) residual */
                 free(conninfoP->line_spanned_msgmall);
                 conninfoP->line_spanned_msgmall = 0;   /* no residual  */
+                conninfoP->line_spanned_msgmall_size = 0;  /*  no residual  */
                 conninfoP->line_spanned_msgblok = 0;   /* no residual  */
                 conninfoP->line_spanned_offset = 0;
                 conninfoP->line_spanned_send_recv_len = 0;
             }
         }
+    }  /*  guard against empty inmsgblok or stupid length */
                 
-        return rc;
+ all_disposed:
+    return rc;
 }
 #endif  /* MSG_OUTPUT_TO_FILE */
 
@@ -2860,7 +2942,10 @@ int responderfn()
       if (msg_output_path[0])
       {
         strcpy (my_msg_output_path, msg_output_path);
-        if (MY_MSG_OUTPUT_UNSUFX != my_msg_output_type) {  /* not unsuffixed */
+        if (    (MY_MSG_OUTPUT_BINARY_UNSUFX != my_msg_output_type)  /* not unsuffixed */
+             && (MY_MSG_OUTPUT_LINEFD_UNSUFX != my_msg_output_type)  /* not unsuffixed */
+             && (MY_MSG_OUTPUT_LINEFD_UNSUFX_DPRC != my_msg_output_type)
+           ) {  /* not unsuffixed */
             strcat(my_msg_output_path, ".srvr");
             if (jobname[0])
               strcat(my_msg_output_path, jobname);
@@ -2901,6 +2986,7 @@ int responderfn()
 #if (DYNAMIC_MSG_BUF == 4096) /*  page-aligned message buffers  */
       inmsgmall = inmsgblok;  /*  remember addr of mallocd area */
       inmsgblok = (char *)(((((long)inmsgmall)+4095)>>12)<<12); /*  page-aligned inbound message buffer */
+      inmsgmall_size = MSG_BLOK_SZ;   /* initial size of mallocd area */
 #endif                        /*  page-aligned message buffers */
 
       if (!(outmsgblok = (char *)malloc(jx))) /*  outbound message buffer  (one per process)  */
@@ -2954,11 +3040,12 @@ int responderfn()
 #endif
         for (connindex = 0; connindex < enquirerproccount; connindex++)
         {
-          connection_array[connindex].con_socket_desc = -1;  /*  indicate not connected */
-          /******   no need to zero any fields, all memset earlier
-          connection_array[connindex].con_numsent = connection_array[connindex].con_numrecv
+            connection_array[connindex].con_socket_desc = -1;  /*  indicate not connected */
+            /*   connection_array[connindex].line_spanned_msgmall_size = 0;  size of mallocd area  - already zerod */
+            /******   no need to zero any fields, all memset earlier
+            connection_array[connindex].con_numsent = connection_array[connindex].con_numrecv
           = connection_array[connindex].con_nummsgr = connection_array[connindex].con_blk_offset = 0;
-          ******/
+            ******/
         }
 
         for (ix=0; ix<CONN_SOCK_SIZE; ix++) conn_by_socket[ix] = -1;  /*  init cache of connections  */
@@ -3059,7 +3146,7 @@ int responderfn()
             *********/
 #ifdef UDP
 		  if ((rc = add_responder_connection(connection_array ,listensd
-			    ,conn_by_socket ,&connectioncount ,&max_socket_desc)) < 0) {
+			    ,conn_by_socket ,&connectioncount ,&max_socket_desc , (struct sockaddr_general *)0)) < 0) {
 		    	goto add_conn_fail;
 		  }
 		  cx++;
@@ -3426,7 +3513,7 @@ int responderfn()
                             if (accept_parm.accept_rc >= 0)
                             {
                               if ((rc = add_responder_connection(connection_array ,accept_parm.msgsock
-                                        ,conn_by_socket ,&connectioncount ,&max_socket_desc)) == 0)
+                                        ,conn_by_socket ,&connectioncount ,&max_socket_desc , &accept_parm.othrend_socket)) == 0)
                               {
                                 no_work_done = 0;         /*   work done */
                               }
@@ -3499,7 +3586,7 @@ int responderfn()
                                     **  handle all other cases in handle_line_spanned_msg
                                     */
                                     if (    (MY_MSG_OUTPUT_BINARY == my_msg_output_type)                 /* binary content   */
-                                         || (enquirerproccount == 1)                                          /* only one enquirer  */
+                                         || (enquirerproccount == 1)                                     /* only one enquirer  */
                                          || (    (0 == connection_array[connindex].line_spanned_msgblok) /* no pending       */
                                               && ('\n' == *(inmsgblok + send_recv_len - 1))              /* ends in linefeed */
                                             )
@@ -3510,9 +3597,11 @@ int responderfn()
                                                       ,msg_output_path ,rc ,send_recv_len ,errno);
                                         }
                                     } else {
-                                        rc = handle_line_spanned_msg(&(connection_array[connindex]) , my_msg_output_fd , &inmsgmall , &inmsgblok , send_recv_len);
-                                        if (rc < 0)
+                                        rc = handle_line_spanned_msg(&(connection_array[connindex]) , my_msg_output_fd , &inmsgmall , &inmsgblok , &inmsgmall_size , send_recv_len);
+                                        if (rc < 0) {
+                                            printline(stderr,"responderfn: responder %d: rc= %d from handle_line_spanned_msg,  terminating\n",mypid,rc);
                                             goto finish_responder;
+                                        }
                                     }
                                 }
 #endif  /* MSG_OUTPUT_TO_FILE */
@@ -4182,7 +4271,7 @@ unsigned long intvl_nummsgr;        /*  total number of messages recvd by all wo
   }
   else command_nameP = netrush_string;
 
-  while ( (option = getopt (argc, argv, ":c:d:e:k:l:m:n:o:O:Q:p:r:s:C:S:I:NRWVqthvwi")) != -1)
+  while ( (option = getopt (argc, argv, ":c:d:e:k:l:m:n:o:u:O:Q:U:p:r:s:C:S:I:NRWVqthvwi")) != -1)
   {
 #ifdef DEBUG_OPTION
     printline(stderr,"option %c\n",option);
@@ -4288,8 +4377,10 @@ unsigned long intvl_nummsgr;        /*  total number of messages recvd by all wo
       job_identifier = atoi(optarg);
       break;
     case 'o':  /*  binary output file for messages received  */
+    case 'u':  /*  binary output file for messages received file unsuffixed by .srvrnnn  */
     case 'O':  /*  linefeed-delimited output file for messages received  */
-    case 'Q':  /*  linefeed-delimited output file unsuffixed by .srvrnnn */
+    case 'Q':  /*  linefeed-delimited output file unsuffixed by .srvrnnn   (deprecated, same as U, now undocumented but still works) */
+    case 'U':  /*  linefeed-delimited output file unsuffixed by .srvrnnn */
 #ifdef MSG_OUTPUT_TO_FILE
       my_msg_output_type = option;
       ix = (sizeof(msg_output_path)-16);    /*  max size permitted  */
